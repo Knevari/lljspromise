@@ -166,7 +166,19 @@ class LLJSPromise {
     return this.then(undefined, catchFn);
   }
 
-  finally() {}
+  finally(sideEffectFn) {
+    if (this._state !== states.PENDING) {
+      sideEffectFn();
+      return this._state === states.FULFILLED
+      ? LLJSPromise.resolve(this._value)
+      : LLJSPromise.reject(this._reason)
+    }
+
+    const controlledPromise = new LLJSPromise();
+    this._finallyQueue.enqueue([controlledPromise, sideEffectFn]);
+
+    return controlledPromise;
+  }
 
   _propagateFulfilled() {
     this._thenQueue.forEach(([controlledPromise, fulfilledFn]) => {
@@ -184,6 +196,11 @@ class LLJSPromise {
       } else {
         return controlledPromise._onFulfilled(this._value);
       }
+    });
+
+    this._finallyQueue.forEach(([controlledPromise, sideEffectFn]) => {
+      sideEffectFn();
+      controlledPromise._onFulfilled(this._value);
     });
 
     this._thenQueue.dequeueAll();
@@ -205,6 +222,11 @@ class LLJSPromise {
       } else {
         return controlledPromise._onRejected(this._reason);
       }
+    });
+
+    this._finallyQueue.forEach(([controlledPromise, sideEffectFn]) => {
+      sideEffectFn();
+      controlledPromise._onRejected(this._value);
     });
 
     this._thenQueue.dequeueAll();
@@ -231,19 +253,35 @@ class LLJSPromise {
 LLJSPromise.resolve = value => new LLJSPromise(resolve => resolve(value));
 LLJSPromise.reject = value => new LLJSPromise((_, reject) => reject(value));
 
-const promise = new LLJSPromise((resolve, reject) => {
-  setTimeout(() => reject('Something went wrong!'), 1000);
-}).catch(err => {
-  console.log(err);
-  return LLJSPromise.reject('recovered');
+const fs = require('fs');
+const path = require('path');
+
+const readFile = (filename, encoding) => new LLJSPromise((resolve, reject) => {
+  fs.readFile(filename, encoding, (err, value) => {
+    if (err) {
+      return reject(err);
+    }
+    resolve(value);
+  });
 });
 
-const firstThen = promise.then(value => {
-  console.log(`Got value: ${value}`);
-  return value + 1;
-}).catch(err => console.log(err));
-
-const secondThen = promise.then(value => {
-  console.log(`Got value: ${value}`);
-  return value + 1;
+const delay = (timeInMs, value) => new LLJSPromise(resolve => {
+  setTimeout(() => {
+    resolve(value);
+  }, timeInMs);
 });
+
+readFile(path.join(__dirname, 'promise.js'), 'utf-8')
+.then(text => {
+  console.log(`${text.length} characters read`);
+  return delay(2000, text.replace(/[aeiou]/g, ''));
+})
+.then(newText => {
+  console.log(newText.slice(0, 200));
+})
+.catch(err => {
+  console.log('An error ocurred', err);
+})
+.finally(() => {
+  console.log('--- All done ---');
+})
